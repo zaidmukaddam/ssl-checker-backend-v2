@@ -1,10 +1,19 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"net"
+	"time"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"net"
 )
 
 type CertificateInfo struct {
@@ -29,6 +38,68 @@ type CertChain struct {
 	SerialNumber       string `json:"serialNumber"`
 	SignatureAlgorithm string `json:"signatureAlgorithm"`
 	Issuer             string `json:"issuer"`
+}
+
+func createCertificate(c *gin.Context) {
+	// Get parameters from the query
+	domain := c.DefaultQuery("domain", "example.com")
+	orgName := c.DefaultQuery("org", "Example Organization")
+	email := c.DefaultQuery("email", "admin@example.com")
+
+	// Generate a new private key
+	priv, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to generate private key."})
+		return
+	}
+
+	notBefore := time.Now()
+	notAfter := notBefore.Add(365 * 24 * time.Hour)
+
+	template := x509.Certificate{
+		SerialNumber: new(big.Int).SetInt64(0),
+		Subject: pkix.Name{
+			CommonName:   domain,
+			Organization: []string{orgName},
+			ExtraNames: []pkix.AttributeTypeAndValue{
+				{
+					Type:  []int{1, 2, 840, 113549, 1, 9, 1},
+					Value: email,
+				},
+			},
+		},
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to create certificate."})
+		return
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: certDER,
+	})
+	privBytes, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to marshal private key."})
+		return
+	}
+
+	privPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "EC PRIVATE KEY",
+		Bytes: privBytes,
+	})
+
+	c.JSON(200, gin.H{
+		"certificate": string(certPEM),
+		"private_key": string(privPEM),
+	})
 }
 
 func getSSLInfo(c *gin.Context) {
@@ -137,6 +208,7 @@ func main() {
 	r.Use(gin.Recovery()) // Panic recovery
 
 	r.GET("/sslinfo", getSSLInfo)
+	r.POST("/createCert", createCertificate)  // This line has been modified
 
 	r.Run()
 }
